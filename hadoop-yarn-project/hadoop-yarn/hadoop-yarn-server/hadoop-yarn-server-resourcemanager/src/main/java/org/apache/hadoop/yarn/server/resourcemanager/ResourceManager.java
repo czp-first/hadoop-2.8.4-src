@@ -125,6 +125,10 @@ import java.util.concurrent.LinkedBlockingQueue;
  * The ResourceManager is the main class that is a set of components.
  * "I am the ResourceManager. All your resources belong to us..."
  *
+ * 对于集群中的每一个节点，RM 维持着一个与之相对应的 RMNodeImpl 对象，在这个对象中有一个状态机，代表着该节点的当前状态。当然，这样的 RMNodeImpl
+ * 对象有很多，而 NodeEventDispatcher 就是这些状态机的驱动者。它根据到来的事件 event 内容中的 NodeID 确定这是要分发到哪一个节点的状态机，
+ * 然后找到代表着那个节点的 RMNode 对象 node，即 RMNodeImpl，就以 event 为参数直接调用其 handle() 函数。
+ *
  */
 @SuppressWarnings("unchecked")
 public class ResourceManager extends CompositeService implements Recoverable {
@@ -143,7 +147,7 @@ public class ResourceManager extends CompositeService implements Recoverable {
    */
   @VisibleForTesting
   protected RMContextImpl rmContext;
-  private Dispatcher rmDispatcher;
+  private Dispatcher rmDispatcher;  // 这是一个 Dispatcher
   @VisibleForTesting
   protected AdminService adminService;
 
@@ -158,16 +162,16 @@ public class ResourceManager extends CompositeService implements Recoverable {
   protected RMActiveServices activeServices;
   protected RMSecretManagerService rmSecretManagerService;
 
-  protected ResourceScheduler scheduler;
+  protected ResourceScheduler scheduler;  // 资源调度器，有三种选择
   protected ReservationSystem reservationSystem;
   private ClientRMService clientRM;
-  protected ApplicationMasterService masterService;
+  protected ApplicationMasterService masterService;  // 为现有的 AM 提供服务和管理
   protected NMLivelinessMonitor nmLivelinessMonitor;
   protected NodesListManager nodesListManager;
-  protected RMAppManager rmAppManager;
+  protected RMAppManager rmAppManager;  // 管理已提交而尚未完成的 App
   protected ApplicationACLsManager applicationACLsManager;
   protected QueueACLsManager queueACLsManager;
-  private WebApp webApp;
+  private WebApp webApp;  // 提供作为 webApp 的网站服务
   private AppReportFetcher fetcher = null;
   protected ResourceTrackerService resourceTracker;
   private JvmPauseMonitor pauseMonitor;
@@ -259,13 +263,13 @@ public class ResourceManager extends CompositeService implements Recoverable {
     // If security is not enabled, use current user
     this.rmLoginUGI = UserGroupInformation.getCurrentUser();
     try {
-      doSecureLogin();
+      doSecureLogin();  // 如果启用了安全机制，用户就得登录，此后便使用实际用户的身份；否则就直接使用启动该 JVM 的用户，通常是特权用户的身份了
     } catch(IOException ie) {
       throw new YarnRuntimeException("Failed to login", ie);
     }
 
     // register the handlers for all AlwaysOn services using setupDispatcher().
-    rmDispatcher = setupDispatcher();
+    rmDispatcher = setupDispatcher();  // 创建一个 Dispatcher 并将其设置成 RM 的 Dispatcher
     addIfService(rmDispatcher);
     rmContext.setDispatcher(rmDispatcher);
 
@@ -274,7 +278,7 @@ public class ResourceManager extends CompositeService implements Recoverable {
     // As elector service needs admin service to be initialized and started,
     // first we add admin service then elector service
 
-    adminService = createAdminService();
+    adminService = createAdminService();  // 创建系统管理服务，即管理服务对象
     addService(adminService);
     rmContext.setRMAdminService(adminService);
 
@@ -292,18 +296,18 @@ public class ResourceManager extends CompositeService implements Recoverable {
 
     rmContext.setYarnConfiguration(conf);
     
-    createAndInitActiveServices();
+    createAndInitActiveServices();  // 创建许多的 service 并放进上面的 serviceList 中
 
     webAppAddress = WebAppUtils.getWebAppBindURL(this.conf,
                       YarnConfiguration.RM_BIND_HOST,
                       WebAppUtils.getRMWebAppURLWithoutScheme(this.conf));
 
     RMApplicationHistoryWriter rmApplicationHistoryWriter =
-        createRMApplicationHistoryWriter();
+        createRMApplicationHistoryWriter();  // 用于运行日志 Log
     addService(rmApplicationHistoryWriter);
     rmContext.setRMApplicationHistoryWriter(rmApplicationHistoryWriter);
 
-    SystemMetricsPublisher systemMetricsPublisher = createSystemMetricsPublisher();
+    SystemMetricsPublisher systemMetricsPublisher = createSystemMetricsPublisher();  // 用来发布统计信息
     addService(systemMetricsPublisher);
     rmContext.setSystemMetricsPublisher(systemMetricsPublisher);
 
@@ -397,14 +401,26 @@ public class ResourceManager extends CompositeService implements Recoverable {
     return new AsyncDispatcher();
   }
 
+  /**
+   * 资源调度器
+   * 具体的类型则在配置文件中加以指定
+   * 这里所说的只是资源调度，实际上也是对于"作业（Job）"投运的调度，这跟操作系统中进程/线程的运行调度是两码事
+   * Hadoop 提供了三种不同的资源调度器供选用，用户可以在配置文件中加以选择。
+   * 1、FifoScheduler。先来先走，按次序来
+   * 2、FairScheduler。要考虑公平问题，不让属于同一用户的作业独占资源
+   * 3、CapacityScheduler。最复杂的调度器，还要考虑尽量合理地使用各个节点的资源
+   * 配置文件 yarn-site.xml 中 的 yarn.resourcemanager.scheduler.class
+   * 如果不加规定，则默认的调度器 DEFAULT_RM_SCHEDULER 是 CapacityScheduler
+   * @return
+   */
   protected ResourceScheduler createScheduler() {
     String schedulerClassName = conf.get(YarnConfiguration.RM_SCHEDULER,
         YarnConfiguration.DEFAULT_RM_SCHEDULER);
     LOG.info("Using Scheduler: " + schedulerClassName);
     try {
-      Class<?> schedulerClazz = Class.forName(schedulerClassName);
+      Class<?> schedulerClazz = Class.forName(schedulerClassName);  // 从conf 文件获取调度器类名
       if (ResourceScheduler.class.isAssignableFrom(schedulerClazz)) {
-        return (ResourceScheduler) ReflectionUtils.newInstance(schedulerClazz,
+        return (ResourceScheduler) ReflectionUtils.newInstance(schedulerClazz,  // 创建调度器
             this.conf);
       } else {
         throw new YarnRuntimeException("Class: " + schedulerClassName
@@ -520,7 +536,7 @@ public class ResourceManager extends CompositeService implements Recoverable {
     }
 
     @Override
-    protected void serviceInit(Configuration configuration) throws Exception {
+    protected void serviceInit(Configuration configuration) throws Exception {  // 这是 RMActiveServices 的 serviceInit
       activeServiceContext = new RMActiveServiceContext();
       rmContext.setActiveServiceContext(activeServiceContext);
 
@@ -532,16 +548,16 @@ public class ResourceManager extends CompositeService implements Recoverable {
       addService(containerAllocationExpirer);
       rmContext.setContainerAllocationExpirer(containerAllocationExpirer);
 
-      AMLivelinessMonitor amLivelinessMonitor = createAMLivelinessMonitor();
+      AMLivelinessMonitor amLivelinessMonitor = createAMLivelinessMonitor();  // 用来监视各 AM 是否存活
       addService(amLivelinessMonitor);
       rmContext.setAMLivelinessMonitor(amLivelinessMonitor);
 
-      AMLivelinessMonitor amFinishingMonitor = createAMLivelinessMonitor();
+      AMLivelinessMonitor amFinishingMonitor = createAMLivelinessMonitor();  // 用来监视各 AM 是否已完成使命
       addService(amFinishingMonitor);
       rmContext.setAMFinishingMonitor(amFinishingMonitor);
       
       RMNodeLabelsManager nlm = createNodeLabelManager();
-      nlm.setRMContext(rmContext);
+      nlm.setRMContext(rmContext);  // 创建 RMNodeLabelsManager
       addService(nlm);
       rmContext.setNodeLabelManager(nlm);
 
@@ -557,7 +573,7 @@ public class ResourceManager extends CompositeService implements Recoverable {
 
       RMStateStore rmStore = null;
       if (recoveryEnabled) {
-        rmStore = RMStateStoreFactory.getStore(conf);
+        rmStore = RMStateStoreFactory.getStore(conf);  // 创建 RMStateStore，以保存各种副本
         boolean isWorkPreservingRecoveryEnabled =
             conf.getBoolean(
               YarnConfiguration.RM_WORK_PRESERVING_RECOVERY_ENABLED,
@@ -585,22 +601,25 @@ public class ResourceManager extends CompositeService implements Recoverable {
         rmContext.setDelegationTokenRenewer(delegationTokenRenewer);
       }
 
+      // ResourceTrackerService 和 NodeListManager 所掌握的信息，则来自众多 NodeManager 节点的心跳报告，即伴随着每次"心跳"提供的报告
+      // 这些信息，最终都要汇集到资源调度器，因为这些资源都要由资源调度器分配出去
       // Register event handler for NodesListManager
-      nodesListManager = new NodesListManager(rmContext);
+      nodesListManager = new NodesListManager(rmContext);  // 用来管理 NM 节点状态清单
       rmDispatcher.register(NodesListManagerEventType.class, nodesListManager);
       addService(nodesListManager);
       rmContext.setNodesListManager(nodesListManager);
 
       // Initialize the scheduler
-      scheduler = createScheduler();
+      scheduler = createScheduler();  // 创建资源调度器
       scheduler.setRMContext(rmContext);
       addIfService(scheduler);
       rmContext.setScheduler(scheduler);
 
-      schedulerDispatcher = createSchedulerEventDispatcher();
+      schedulerDispatcher = createSchedulerEventDispatcher();  // 创建调度器专用的 Dispatcher
       addIfService(schedulerDispatcher);
       rmDispatcher.register(SchedulerEventType.class, schedulerDispatcher);
 
+      // 创建三种 Dispatch 目标对象（接受来自 RM 的事件），并向 RM 的 Dispatcher 登记
       // Register event handler for RmAppEvents
       rmDispatcher.register(RMAppEventType.class,
           new ApplicationEventDispatcher(rmContext));
@@ -613,22 +632,22 @@ public class ResourceManager extends CompositeService implements Recoverable {
       rmDispatcher.register(
           RMNodeEventType.class, new NodeEventDispatcher(rmContext));
 
-      nmLivelinessMonitor = createNMLivelinessMonitor();
+      nmLivelinessMonitor = createNMLivelinessMonitor();  // 用来监视 NodeManager 的存活
       addService(nmLivelinessMonitor);
 
-      resourceTracker = createResourceTrackerService();
+      resourceTracker = createResourceTrackerService();  // 用来跟踪资源的使用，跟踪管理着 NodeManager 节点所知道的资源变动
       addService(resourceTracker);
       rmContext.setResourceTrackerService(resourceTracker);
 
       DefaultMetricsSystem.initialize("ResourceManager");
-      JvmMetrics jm = JvmMetrics.initSingleton("ResourceManager", null);
+      JvmMetrics jm = JvmMetrics.initSingleton("ResourceManager", null);  // 保证统计信息中只有一个 RM
       pauseMonitor = new JvmPauseMonitor(conf);
       jm.setPauseMonitor(pauseMonitor);
 
       // Initialize the Reservation system
       if (conf.getBoolean(YarnConfiguration.RM_RESERVATION_SYSTEM_ENABLE,
           YarnConfiguration.DEFAULT_RM_RESERVATION_SYSTEM_ENABLE)) {
-        reservationSystem = createReservationSystem();
+        reservationSystem = createReservationSystem();  // 如有要求就创建资源预定机制
         if (reservationSystem != null) {
           reservationSystem.setRMContext(rmContext);
           addIfService(reservationSystem);
@@ -640,7 +659,7 @@ public class ResourceManager extends CompositeService implements Recoverable {
       // creating monitors that handle preemption
       createPolicyMonitors();
 
-      masterService = createApplicationMasterService();
+      masterService = createApplicationMasterService();  // 用来为 NM 节点上的 AM 提供服务
       addService(masterService) ;
       rmContext.setApplicationMasterService(masterService);
 
@@ -648,15 +667,15 @@ public class ResourceManager extends CompositeService implements Recoverable {
 
       queueACLsManager = createQueueACLsManager(scheduler, conf);
 
-      rmAppManager = createRMAppManager();
+      rmAppManager = createRMAppManager();  // 用来管理 AM
       // Register event handler for RMAppManagerEvents
       rmDispatcher.register(RMAppManagerEventType.class, rmAppManager);
 
-      clientRM = createClientRMService();
+      clientRM = createClientRMService();  // 用来为客户提供资源服务
       addService(clientRM);
       rmContext.setClientRMService(clientRM);
 
-      applicationMasterLauncher = createAMLauncher();
+      applicationMasterLauncher = createAMLauncher();  // 用来在 NM 节点上启动运行 AM
       rmDispatcher.register(AMLauncherEventType.class,
           applicationMasterLauncher);
 
@@ -882,6 +901,16 @@ public class ResourceManager extends CompositeService implements Recoverable {
     }
   }
 
+  /**
+   * RM 有个顶层的 rmDispatcher，用来帮助向 ApplicationEventDispatcher、ApplicationAttemptEventDispatcher、NodeEventDispatcher
+   * 等对象分发事件。但是这三者的名字容易令人误解，因为它们其实并非 Dispatcher，而是 Dispatch 的目标；它们实现的是 EventHandler interface
+   * 而不是 Dispatcher interface。
+   * 不过称它们为 Dispatcher 也并非全无道理，因为它们其实起着中介的作用，对于 rmDispatcher 来说，它们确实是事件的处理者而不是分发者，所实现的
+   * interface 也是 EventHandler 而不是 Dispatcher。但是，对于站在它们身后的真正意义上的事件处理者而言，它们却相当于事件的分发者，相当于 Dispatcher
+   */
+  /**
+   * ApplicationEventDispatcher 有关 Application，用来驱动代表着具体 App 的 ApplicationImpl 对象中的状态机
+   */
   @Private
   public static final class ApplicationEventDispatcher implements
       EventHandler<RMAppEvent> {
@@ -907,6 +936,14 @@ public class ResourceManager extends CompositeService implements Recoverable {
     }
   }
 
+  /**
+   * ApplicationAttemptEventDispatcher 有关 ApplicationAttempt，用来驱动代表着一次具体运行尝试的 RMAppAttemptImpl 对象中的状态机
+   */
+  /**
+   * ApplicationEventDispatcher 和 ApplicationAttemptEventDispatcher 的区别在于：前者是宏观层面的，代表着一个 App；而后者则代表运行该
+   * App 的一次具体尝试，相对而言是微观层面的。如果 App 的一次 ApplicationAttempt 失败，AM 可以要求再来一次，要到屡战屡败之后才能宣告
+   * Application 的失败
+   */
   @Private
   public static final class ApplicationAttemptEventDispatcher implements
       EventHandler<RMAppAttemptEvent> {
@@ -936,6 +973,11 @@ public class ResourceManager extends CompositeService implements Recoverable {
     }
   }
 
+  /**
+   * NodeEventDispatcher 与 ResourceTrackerService 和 RMNodeImpl 有关。RM 为 NodeEventDispatcher 登记要接收的事件类型是 RMNodeEventType，
+   * 这种事件主要来自 ResourceTrackerService，反应着集群中各节点的状态变化
+   * 例如失去连接然后又恢复了，或者机器重启了，等等。NodeEventDispatcher 用这些事件驱动相应的 RMNodeImpl 对象中与此节点相对应的状态机
+   */
   @Private
   public static final class NodeEventDispatcher implements
       EventHandler<RMNodeEvent> {
@@ -949,10 +991,10 @@ public class ResourceManager extends CompositeService implements Recoverable {
     @Override
     public void handle(RMNodeEvent event) {
       NodeId nodeId = event.getNodeId();
-      RMNode node = this.rmContext.getRMNodes().get(nodeId);
+      RMNode node = this.rmContext.getRMNodes().get(nodeId);  // RMNode 是界面，RMNodeImpl 实现了 RMNode 和 EventHandler 两个界面
       if (node != null) {
         try {
-          ((EventHandler<RMNodeEvent>) node).handle(event);
+          ((EventHandler<RMNodeEvent>) node).handle(event);  // 操作 RMNodeImpl 的状态机，调用其 doTransition()
         } catch (Throwable t) {
           LOG.error("Error in handling event type " + event.getType()
               + " for node " + nodeId, t);
@@ -1081,6 +1123,7 @@ public class ResourceManager extends CompositeService implements Recoverable {
   /**
    * Helper method to create and init {@link #activeServices}. This creates an
    * instance of {@link RMActiveServices} and initializes it.
+   * 创建一个 RMActiveServices 类对象，在这个对象的初始化过程中为 RM 创建了许多"活跃"的服务
    */
   protected void createAndInitActiveServices() {
     activeServices = new RMActiveServices(this);
@@ -1330,7 +1373,7 @@ public class ResourceManager extends CompositeService implements Recoverable {
           printUsage(System.err);
         }
       } else {
-        ResourceManager resourceManager = new ResourceManager();
+        ResourceManager resourceManager = new ResourceManager();  // 这会调用 super.init(),然后回过来调用这里的 serviceInit()
         ShutdownHookManager.get().addShutdownHook(
           new CompositeServiceShutdownHook(resourceManager),
           SHUTDOWN_HOOK_PRIORITY);
@@ -1345,6 +1388,7 @@ public class ResourceManager extends CompositeService implements Recoverable {
 
   /**
    * Register the handlers for alwaysOn services
+   * RM 所用的其实也是 AsyncDispatcher
    */
   private Dispatcher setupDispatcher() {
     Dispatcher dispatcher = createDispatcher();
