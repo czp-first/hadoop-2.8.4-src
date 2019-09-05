@@ -805,6 +805,11 @@ public class RPC {
   }
   
   /** An RPC Server. */
+  /**
+   * 这是对 org.apache.hadoop.ipc.Server 抽象类的补充。但是这里声明了是 abstract，所以仍需进一步对 RPC.Server 加以扩充落实，才能为其创建具体对象
+   * 虽然已经补上了 call() 这个函数
+   * 这样，java 编译器就会把住程序编译这一关，不让在程序中直接创建 RPC.Server 的对象，这是故意的安排
+   */
   public abstract static class Server extends org.apache.hadoop.ipc.Server {
    boolean verbose;
    static String classNameBase(String className) {

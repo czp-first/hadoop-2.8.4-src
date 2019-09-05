@@ -128,7 +128,16 @@ import org.codehaus.jackson.map.ObjectMapper;
 /** An abstract IPC service.  IPC calls take a single {@link Writable} as a
  * parameter, and return a {@link Writable} as their value.  A service runs on
  * a port and is defined by a parameter class and a value class.
- * 
+ *
+ * RPC 交互的两方，总有一方是通信的主动发起方，也是某种服务的需求方；另一方则是被动的响应方，也是服务的提供方。所以通信中至少有一方
+ * 扮演着"服务者"即 Server 的角色。如果是对方对等的通信，则各自都有其作为 Server 的一面。
+ * 在 Hadoop 的系统结构中，节点有主从（Master/Slave）之分，通常主节点扮演着 Server 的角色，主从节点间的通信都是由从节点发起的，
+ * 主节点则像是"公仆"。而不同的节点之间的通信则是对等的，谁都可以发起，所以每个从节点也都有作为 Server 的一面
+ *
+ * Server 是个抽象类，call() 方法无法落实
+ * call() 是 RPC 中的 Call。RPC 的关键就是在远地调用某个函数，但是具体怎么调用却与所用的协议即 protocol 有关。协议不同，下面的代码
+ * 就不同，所以无法脱离具体的协议来提供实现这个方法的代码。显然，能实际创建的 Server 至少得补上这个 call() 方法的具体实现才行
+ *
  * @see Client
  */
 @Public
@@ -253,6 +262,8 @@ public abstract class Server {
 
   /**
    * Register a RPC kind and the class to deserialize the rpc request.
+   *
+   * 登记一种 RpcKind 及其 ProtocolEngine
    * 
    * Called by static initializers of rpcKind Engines
    * @param rpcKind
@@ -435,12 +446,12 @@ public abstract class Server {
   private final boolean tcpNoDelay; // if T then disable Nagle's Algorithm
 
   volatile private boolean running = true;         // true while server runs
-  private CallQueueManager<Call> callQueue;
+  private CallQueueManager<Call> callQueue;  // 用来管理 Listener 内部的请求队列
 
   // maintains the set of client connections and handles idle timeouts
   private ConnectionManager connectionManager;
-  private Listener listener = null;
-  private Responder responder = null;
+  private Listener listener = null;  // listener 是个线程，其类型定义见下，用来"倾听"连接请求的，既然有 Listener，就说明底层的网络通信的有连接的，所以采用的是 TCP 而不是 UDP 协议
+  private Responder responder = null;  // 用来向对方做出回应的
   private Handler[] handlers = null;
 
   private boolean logSlowRPC = false;
@@ -907,39 +918,45 @@ public abstract class Server {
     
     private ServerSocketChannel acceptChannel = null; //the accept channel
     private Selector selector = null; //the selector that we use for the server
-    private Reader[] readers = null;
+    private Reader[] readers = null;  // Listener 对象内部的 Reader 线程数组
     private int currentReader = 0;
     private InetSocketAddress address; //the address we bind at
     private int backlogLength = conf.getInt(
         CommonConfigurationKeysPublic.IPC_SERVER_LISTEN_QUEUE_SIZE_KEY,
         CommonConfigurationKeysPublic.IPC_SERVER_LISTEN_QUEUE_SIZE_DEFAULT);
-    
+
+    /**
+     * Listener 的构造函数
+     * @throws IOException
+     */
     public Listener() throws IOException {
-      address = new InetSocketAddress(bindAddress, port);
+      address = new InetSocketAddress(bindAddress, port);  // Socket 地址和端口号
       // Create a new server socket and set to non blocking mode
-      acceptChannel = ServerSocketChannel.open();
+      acceptChannel = ServerSocketChannel.open();  // 创建 Socket 通道
       acceptChannel.configureBlocking(false);
 
       // Bind the server socket to the local host and port
-      bind(acceptChannel.socket(), address, backlogLength, conf, portRangeConfig);
+      bind(acceptChannel.socket(), address, backlogLength, conf, portRangeConfig);  // 绑定地址
       port = acceptChannel.socket().getLocalPort(); //Could be an ephemeral port
       // create a selector;
       selector= Selector.open();
+      // 创建一个线程数组，数组大小为 readTheads，来自创建 Server 时的参数 numReaders
+      // 表示 Listener 中需要有多少个用来响应连接请求的 Reader 线程，一个 Server 通常都需要维持多个并发连接，所以需要多个 Reader 线程
       readers = new Reader[readThreads];
-      for (int i = 0; i < readThreads; i++) {
+      for (int i = 0; i < readThreads; i++) {  // 为提高响应速度，预先创建一组 Reader 线程并加以启动
         Reader reader = new Reader(
             "Socket Reader #" + (i + 1) + " for port " + port);
         readers[i] = reader;
-        reader.start();
+        reader.start();  // start 所创建的 Reader 线程
       }
 
       // Register accepts on the server socket with the selector.
       acceptChannel.register(selector, SelectionKey.OP_ACCEPT);
       this.setName("IPC Server listener on " + port);
-      this.setDaemon(true);
+      this.setDaemon(true);  // 断开该线程与标准I/O通道的连接，使其变成后台线程
     }
     
-    private class Reader extends Thread {
+    private class Reader extends Thread {  // 接收线程 Reader，接受和处理服务请求
       final private BlockingQueue<Connection> pendingConnections;
       private final Selector readSelector;
 
@@ -1014,8 +1031,8 @@ public abstract class Server {
        * and update its readSelector before performing the next select
        */
       public void addConnection(Connection conn) throws InterruptedException {
-        pendingConnections.put(conn);
-        readSelector.wakeup();
+        pendingConnections.put(conn);  // 挂入这个 Reader 线程的待处理队列
+        readSelector.wakeup();  // 唤醒这个线程，下面就是这个线程的事了
       }
 
       void shutdown() {
@@ -1030,23 +1047,26 @@ public abstract class Server {
       }
     }
 
+    /**
+     * Listener 的 run() 函数
+     */
     @Override
     public void run() {
       LOG.info(Thread.currentThread().getName() + ": starting");
       SERVER.set(Server.this);
       connectionManager.startIdleScan();
-      while (running) {
+      while (running) {  // Listener 线程的主循环
         SelectionKey key = null;
         try {
-          getSelector().select();
-          Iterator<SelectionKey> iter = getSelector().selectedKeys().iterator();
-          while (iter.hasNext()) {
+          getSelector().select();  // 睡眠等待连接请求到来
+          Iterator<SelectionKey> iter = getSelector().selectedKeys().iterator();  // 请求可能不止一个
+          while (iter.hasNext()) {  // 逐个扫描同时到来的连接请求
             key = iter.next();
             iter.remove();
             try {
               if (key.isValid()) {
                 if (key.isAcceptable())
-                  doAccept(key);
+                  doAccept(key);  //  接受连接请求
               }
             } catch (IOException e) {
             }
@@ -1098,14 +1118,14 @@ public abstract class Server {
     void doAccept(SelectionKey key) throws InterruptedException, IOException,  OutOfMemoryError {
       ServerSocketChannel server = (ServerSocketChannel) key.channel();
       SocketChannel channel;
-      while ((channel = server.accept()) != null) {
+      while ((channel = server.accept()) != null) {  // 接受连接请求后成为一个通道
 
         channel.configureBlocking(false);
         channel.socket().setTcpNoDelay(tcpNoDelay);
         channel.socket().setKeepAlive(true);
         
-        Reader reader = getReader();
-        Connection c = connectionManager.register(channel);
+        Reader reader = getReader();  // 从数组 readers 中获取一个空闲的 Reader 线程
+        Connection c = connectionManager.register(channel);  // 在此通道上建立一个连接
         // If the connectionManager can't take it, close the connection.
         if (c == null) {
           if (channel.isOpen()) {
@@ -1115,7 +1135,7 @@ public abstract class Server {
           continue;
         }
         key.attach(c);  // so closeCurrentConnection can get the object
-        reader.addConnection(c);
+        reader.addConnection(c);  // 将此连接指派给这个 Reader 线程
       }
     }
 
@@ -1178,7 +1198,7 @@ public abstract class Server {
   }
 
   // Sends responses of RPC back to clients.
-  private class Responder extends Thread {
+  private class Responder extends Thread {  // 回应线程 Responder
     private final Selector writeSelector;
     private int pending;         // connections waiting to register
     
@@ -1494,6 +1514,9 @@ public abstract class Server {
   }
 
   /** Reads calls from a connection and queues them for handling. */
+  /**
+   * 代表着一个具体连接
+   */
   public class Connection {
     private boolean connectionHeaderRead = false; // connection  header is read?
     private boolean connectionContextRead = false; //if connection context that
@@ -1623,7 +1646,7 @@ public abstract class Server {
       }
     }
 
-    private void saslReadAndProcess(RpcWritable.Buffer buffer) throws
+    private void saslReadAndProcess(RpcWritable.Buffer buffer) throws  // SASL 加密报文的读入和处理
         RpcServerException, IOException, InterruptedException {
       final RpcSaslProto saslMessage =
           getMessage(RpcSaslProto.getDefaultInstance(), buffer);
@@ -1724,7 +1747,14 @@ public abstract class Server {
         }
       }
     }
-    
+
+    /**
+     * 处理加密的报文
+     * @param saslMessage
+     * @return
+     * @throws IOException
+     * @throws InterruptedException
+     */
     private RpcSaslProto processSaslMessage(RpcSaslProto saslMessage)
         throws IOException, InterruptedException {
       final RpcSaslProto saslResponse;
@@ -2459,6 +2489,9 @@ public abstract class Server {
   }
 
   /** Handles queued calls . */
+  /**
+   * Call 处理线程
+   */
   private class Handler extends Thread {
     public Handler(int instanceNumber) {
       this.setDaemon(true);
@@ -2533,7 +2566,7 @@ public abstract class Server {
       logger.info(logMsg, e);
     }
   }
-  
+
   protected Server(String bindAddress, int port,
                   Class<? extends Writable> paramClass, int handlerCount, 
                   Configuration conf)
@@ -2564,6 +2597,8 @@ public abstract class Server {
    * RPC.RpcInvoker)}.
    * This parameter has been retained for compatibility with existing tests
    * and usage.
+   *
+   * Server 类对象的构造函数
    */
   @SuppressWarnings("unchecked")
   protected Server(String bindAddress, int port,
@@ -2618,7 +2653,7 @@ public abstract class Server {
     this.negotiateResponse = buildNegotiateResponse(enabledAuthMethods);
     
     // Start the listener here and let it bind to the port
-    listener = new Listener();
+    listener = new Listener();  // 创建一个 Listener 对象
     this.port = listener.getAddress().getPort();    
     connectionManager = new ConnectionManager();
     this.rpcMetrics = RpcMetrics.create(this, conf);
@@ -2634,7 +2669,7 @@ public abstract class Server {
     // Create the responder here
     responder = new Responder();
     
-    if (secretManager != null || UserGroupInformation.isSecurityEnabled()) {
+    if (secretManager != null || UserGroupInformation.isSecurityEnabled()) {  // 如果使用加密
       SaslRpcServer.init(conf);
       saslPropsResolver = SaslPropertiesResolver.getInstance(conf);
     }
