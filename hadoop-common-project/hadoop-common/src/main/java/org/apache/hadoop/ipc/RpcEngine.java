@@ -36,7 +36,12 @@ import org.apache.hadoop.security.token.TokenIdentifier;
 @InterfaceStability.Evolving
 public interface RpcEngine {
 
-  /** Construct a client-side proxy object. 
+  /** Construct a client-side proxy object.
+   *
+   * 返回一个 proxy 对象
+   *
+   * getProxy() 的返回类型是 ProtocolProxy<T>，即某种类型的 ProtocolProxy
+   *
    * @param <T>*/
   <T> ProtocolProxy<T> getProxy(Class<T> protocol,
                   long clientVersion, InetSocketAddress addr,
@@ -54,6 +59,10 @@ public interface RpcEngine {
 
   /** 
    * Construct a server for a protocol implementation instance.
+   *
+   * 返回一个 RPC.Server 对象
+   *
+   * getServer() 的返回类型则是 RPC.Server，即对于 RPC.Server 的某种落实了它的 call() 函数的扩充，总之是某种类型的 RPC.Server 对象
    * 
    * @param protocol the class of protocol to use
    * @param instance the instance of protocol whose methods will be called

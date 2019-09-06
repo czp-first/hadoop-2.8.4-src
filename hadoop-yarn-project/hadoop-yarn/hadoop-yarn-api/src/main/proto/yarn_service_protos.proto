@@ -140,6 +140,8 @@ message GetApplicationReportResponseProto {
   optional ApplicationReportProto application_report = 1;
 }
 
+// SubmitApplicationRequestProto 后缀 Proto 并不表示 SubmitApplicationRequest 就是一个 Protocol，而只是说这是一个
+// "Protocol数据单元"。事实上这只是 ApplicationClientProtocol 所定义的诸多报文格式之一
 message SubmitApplicationRequestProto {
   optional ApplicationSubmissionContextProto application_submission_context= 1;
 }

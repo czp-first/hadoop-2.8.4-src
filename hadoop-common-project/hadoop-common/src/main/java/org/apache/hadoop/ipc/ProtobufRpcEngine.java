@@ -346,7 +346,9 @@ public class ProtobufRpcEngine implements RpcEngine {
   public static class Server extends RPC.Server {
     /**
      * Construct an RPC server.
-     * 
+     *
+     * 注意：这里的 Server 是 ProtobufRpcEngine.Server, 而不是 RPC.Server，前者是对后者的扩充
+     *
      * @param protocolClass the class of protocol
      * @param protocolImpl the protocolImpl whose methods will be called
      * @param conf the configuration to use
@@ -365,10 +367,10 @@ public class ProtobufRpcEngine implements RpcEngine {
         throws IOException {
       super(bindAddress, port, null, numHandlers,
           numReaders, queueSizePerHandler, conf, classNameBase(protocolImpl
-              .getClass().getName()), secretManager, portRangeConfig);
+              .getClass().getName()), secretManager, portRangeConfig);  // 执行其父类的构造函数
       this.verbose = verbose;  
       registerProtocolAndImpl(RPC.RpcKind.RPC_PROTOCOL_BUFFER, protocolClass,
-          protocolImpl);
+          protocolImpl);  // 向 RPC 登记
     }
     
     /**
@@ -418,17 +420,17 @@ public class ProtobufRpcEngine implements RpcEngine {
           Writable writableRequest, long receiveTime) throws Exception {
         RpcProtobufRequest request = (RpcProtobufRequest) writableRequest;
         RequestHeaderProto rpcRequest = request.getRequestHeader();
-        String methodName = rpcRequest.getMethodName();
-        String protoName = rpcRequest.getDeclaringClassProtocolName();
-        long clientVersion = rpcRequest.getClientProtocolVersion();
+        String methodName = rpcRequest.getMethodName();  // 目标方法的名称
+        String protoName = rpcRequest.getDeclaringClassProtocolName();  // Protocol 的名称
+        long clientVersion = rpcRequest.getClientProtocolVersion();  // Protocol 的版本号
         if (server.verbose)
           LOG.info("Call: protocol=" + protocol + ", method=" + methodName);
         
         ProtoClassProtoImpl protocolImpl = getProtocolImpl(server, protoName,
-            clientVersion);
-        BlockingService service = (BlockingService) protocolImpl.protocolImpl;
+            clientVersion);  // 包含着对具体 Protocol 的实现，由 ProtocolBuf 提供
+        BlockingService service = (BlockingService) protocolImpl.protocolImpl;  // 由ProtocolBuf 为该 Protocol 提供的一个实现了 BlockingService 提供了一个实现了 BlockingService 界面的某类对象
         MethodDescriptor methodDescriptor = service.getDescriptorForType()
-            .findMethodByName(methodName);
+            .findMethodByName(methodName);  // 根据方法名从该类对象内部找到对目标函数的描述
         if (methodDescriptor == null) {
           String msg = "Unknown method " + methodName + " called on " + protocol
               + " protocol.";
@@ -436,7 +438,7 @@ public class ProtobufRpcEngine implements RpcEngine {
           throw new RpcNoSuchMethodException(msg);
         }
         Message prototype = service.getRequestPrototype(methodDescriptor);
-        Message param = request.getValue(prototype);
+        Message param = request.getValue(prototype);  // 从调用请求 request 中恢复参数序列
 
         Message result;
         long startTime = Time.now();
@@ -444,7 +446,7 @@ public class ProtobufRpcEngine implements RpcEngine {
         Exception exception = null;
         try {
           server.rpcDetailedMetrics.init(protocolImpl.protocolClass);
-          result = service.callBlockingMethod(methodDescriptor, null, param);
+          result = service.callBlockingMethod(methodDescriptor, null, param);  // 调用这个方法的中介
         } catch (ServiceException e) {
           exception = (Exception) e.getCause();
           throw (Exception) e.getCause();

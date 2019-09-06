@@ -62,6 +62,17 @@ import com.google.protobuf.BlockingService;
 
 /** A simple RPC mechanism.
  *
+ * protocol 是 Client/Server 之间的规程和协议。但注意，这是 RPC 层的协议，不要与传输层的协议如 UDP、TCP 之类混淆
+ * 虽然 RPC 针对的类和函数很多，但是 大的分类还是有的
+ * 例如与提交作业和分配资源有关的函数就各有不少
+ * 于是可以说，提交作业有提交作业的 protocol，分配资源有分配资源有关的 protocol，
+ * 类似地，NM 节点与 RM 节点之间有 protocol，NM 节点互相之间又是另一种
+ * 最好远地有个什么类的对象、本地就有这个类对象的镜像即 proxy；这样当然好，但是数量巨大，种类繁多
+ * 这种的办法是以 protocol 为单位，让每个 protocol 都有自己的 Server 和 proxy。
+ * 所以，当要创建一个 Server（或 proxy）时，首先要明确这是要创建哪一种 protocol 的 Server（或 proxy），需要有对于此中 protocol 的定义和说明，这样
+ * 才能生成对于其中各个函数的调用（代码），并且有什么样的 Server 就有什么样的 proxy。
+ * 所以，对于 RPC 机制的实现，protocol 是要素
+ *
  * A <i>protocol</i> is a Java interface.  All parameters and return types must
  * be one of:
  *
@@ -198,18 +209,19 @@ public class RPC {
    */
   public static void setProtocolEngine(Configuration conf,
                                 Class<?> protocol, Class<?> engine) {
-    conf.setClass(ENGINE_PROP+"."+protocol.getName(), engine, RpcEngine.class);
+    conf.setClass(ENGINE_PROP+"."+protocol.getName(), engine, RpcEngine.class);  // ENGINE_PROP 就是 rpc.engine
   }
 
   // return the RpcEngine configured to handle a protocol
+  // 获取或创建具体的 ProtocolEngine，有 ProtobufRpcEngine 和 WritableRpcEngine 两种
   static synchronized RpcEngine getProtocolEngine(Class<?> protocol,
       Configuration conf) {
-    RpcEngine engine = PROTOCOL_ENGINES.get(protocol);
-    if (engine == null) {
+    RpcEngine engine = PROTOCOL_ENGINES.get(protocol);  // 也许已经在这个集合中
+    if (engine == null) {  // 若没有，需要创建
       Class<?> impl = conf.getClass(ENGINE_PROP+"."+protocol.getName(),
-                                    WritableRpcEngine.class);
+                                    WritableRpcEngine.class);  // 这就是通过 setProtocolEngine() 设置的 RpcEngine：ProtocolRpcEngine
       engine = (RpcEngine)ReflectionUtils.newInstance(impl, conf);
-      PROTOCOL_ENGINES.put(protocol, engine);
+      PROTOCOL_ENGINES.put(protocol, engine);  // 放入 PROTOCOL_ENGINES
     }
     return engine;
   }
@@ -431,7 +443,9 @@ public class RPC {
   }
 
   /** Construct a client-side proxy object that implements the named protocol,
-   * talking to a server at the named address. 
+   * talking to a server at the named address.
+   *
+   * 用于客户端的创建
    * @param <T>*/
   public static <T> T getProxy(Class<T> protocol,
                                 long clientVersion,
@@ -458,7 +472,7 @@ public class RPC {
                                 InetSocketAddress addr, Configuration conf,
                                 SocketFactory factory) throws IOException {
     UserGroupInformation ugi = UserGroupInformation.getCurrentUser();
-    return getProtocolProxy(protocol, clientVersion, addr, ugi, conf, factory);
+    return getProtocolProxy(protocol, clientVersion, addr, ugi, conf, factory);  // **
   }
   
   /** Construct a client-side proxy object that implements the named protocol,
@@ -702,6 +716,8 @@ public class RPC {
 
   /**
    * Class to construct instances of RPC server with specific options.
+   *
+   * 用于服务端的创建
    */
   public static class Builder {
     private Class<?> protocol = null;
@@ -782,7 +798,10 @@ public class RPC {
     }
     
     /**
-     * Build the RPC Server. 
+     * Build the RPC Server.
+     *
+     * 用于服务端的创建
+     *
      * @throws IOException on error
      * @throws HadoopIllegalArgumentException when mandatory fields are not set
      */
@@ -797,7 +816,7 @@ public class RPC {
         throw new HadoopIllegalArgumentException("instance is not set");
       }
       
-      return getProtocolEngine(this.protocol, this.conf).getServer(
+      return getProtocolEngine(this.protocol, this.conf).getServer(  // getProtocolEngine().getServer()
           this.protocol, this.instance, this.bindAddress, this.port,
           this.numHandlers, this.numReaders, this.queueSizePerHandler,
           this.verbose, this.conf, this.secretManager, this.portRangeConfig);
@@ -991,6 +1010,9 @@ public class RPC {
     @Override
     public Writable call(RPC.RpcKind rpcKind, String protocol,
         Writable rpcRequest, long receiveTime) throws Exception {
+      // 例：
+      // getRpcInvoker(rpcKind) 对于 ProtobufRpcEngine，这是 ProtoBufInvoker
+      // 若 rpcKind 所对应的实参是 RPC_PROTOCOL_BUFFER，所以 invoker 就是 ProtoBufRpcInvoker
       return getRpcInvoker(rpcKind).call(this, protocol, rpcRequest,
           receiveTime);
     }

@@ -28,8 +28,8 @@ option java_generic_services = true;
 option java_generate_equals_and_hash = true;
 package hadoop.yarn;
 
-import "Security.proto";
-import "yarn_service_protos.proto";
+import "Security.proto";  // 以与信息安全有关的字段
+import "yarn_service_protos.proto";  // 定义报文的格式
 
 service ApplicationClientProtocolService {
   rpc getNewApplication (GetNewApplicationRequestProto) returns (GetNewApplicationResponseProto);
